@@ -1,0 +1,216 @@
+blueprint:
+  name: Activity-controlled lights
+  description: >
+    Turn one or more lights on while a room is active, then turn them off after
+    every activity entity has become inactive for a configurable period.
+
+    Activity entities may turn the lights on. Optional hold entities can keep
+    already-on lights on, but never turn them on by themselves. By default this
+    automation takes ownership of its selected lights whenever activity turns
+    them on, even if someone had already switched them on manually.
+
+    Optional activation conditions can restrict only when activity is allowed
+    to turn the lights on (for example by illuminance, time, presence, or a
+    lockout helper). They do not prevent an already-started run from eventually
+    turning its lights off.
+  domain: automation
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    required:
+      name: Lights and activity
+      icon: mdi:motion-sensor
+      input:
+        activity_entities:
+          name: Activity entities
+          description: >
+            One or more entities whose active state should turn on the lights.
+            Motion and occupancy binary sensors are typical, but any entity
+            with the configured active state can be used.
+          selector:
+            entity:
+              multiple: true
+
+        light_entities:
+          name: Lights
+          description: >
+            The lights controlled as one set. When activity is accepted, all
+            selected lights become owned by this automation and are turned off
+            together after inactivity.
+          selector:
+            entity:
+              filter:
+                - domain: light
+              multiple: true
+
+    behavior:
+      name: Activity behavior
+      icon: mdi:timer-outline
+      input:
+        hold_entities:
+          name: Keep-on entities
+          description: >
+            Optional entities that count as activity only while the selected
+            lights are already on. Use these for sources such as a bed
+            occupancy sensor, media player helper, or another room-state
+            helper that should keep lights on without switching them on.
+          default: []
+          selector:
+            entity:
+              multiple: true
+
+        active_state:
+          name: Active state
+          description: >
+            State considered active for both activity and keep-on entities.
+            The default works with binary sensors and input booleans.
+          default: "on"
+          selector:
+            text:
+
+        inactivity_delay:
+          name: Inactivity delay
+          description: >
+            How long every activity and keep-on entity must remain inactive
+            before the lights are turned off.
+          default:
+            minutes: 5
+          selector:
+            duration:
+
+        activation_conditions:
+          name: Activation conditions
+          description: >
+            Optional Home Assistant conditions evaluated only before an
+            activity entity turns on the lights. Leave empty to allow
+            activation at all times. Multiple conditions must all pass.
+          default: []
+          selector:
+            condition:
+
+    advanced:
+      name: Light behavior
+      icon: mdi:lightbulb-cog-outline
+      collapsed: true
+      input:
+        turn_on_transition:
+          name: Turn-on transition
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 30
+              step: 0.1
+              unit_of_measurement: s
+              mode: box
+
+        turn_off_transition:
+          name: Turn-off transition
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 30
+              step: 0.1
+              unit_of_measurement: s
+              mode: box
+
+variables:
+  activity_entity_ids: !input activity_entities
+  hold_entity_ids: !input hold_entities
+  light_entity_ids: !input light_entities
+  active_state_value: !input active_state
+
+triggers:
+  - trigger: state
+    entity_id: !input activity_entities
+    to: !input active_state
+    id: activate
+
+  - trigger: state
+    entity_id: !input hold_entities
+    to: !input active_state
+    id: hold
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: activate
+        sequence:
+          # Conditions deliberately apply only to activation. Once this
+          # automation owns the lights, lockouts and lux changes must not leave
+          # them on forever.
+          - choose:
+              - conditions: !input activation_conditions
+                sequence:
+                  # Always call turn_on, including when every selected light is
+                  # already on. This is the ownership hand-off: manual state
+                  # does not exempt a light from the inactivity timer.
+                  - action: light.turn_on
+                    target:
+                      entity_id: !input light_entities
+                    data:
+                      transition: !input turn_on_transition
+            default:
+              # A failed activation condition must not abandon an existing
+              # ownership timer. Continue only if there is a light to manage.
+              - condition: template
+                value_template: >-
+                  {{
+                    expand(light_entity_ids)
+                    | selectattr('state', 'eq', 'on')
+                    | list
+                    | count > 0
+                  }}
+
+      - conditions:
+          - condition: trigger
+            id: hold
+        sequence:
+          # A keep-on source is intentionally unable to illuminate a dark room.
+          - condition: template
+            value_template: >-
+              {{
+                expand(light_entity_ids)
+                | selectattr('state', 'eq', 'on')
+                | list
+                | count > 0
+              }}
+    default:
+      - stop: Unsupported activity trigger
+
+  # Waiting on aggregate state avoids the common multiple-sensor bug where the
+  # first sensor to clear starts the timer while another sensor is still active.
+  - wait_template: >-
+      {{
+        expand(activity_entity_ids + hold_entity_ids)
+        | selectattr('state', 'eq', active_state_value)
+        | list
+        | count == 0
+      }}
+
+  - delay: !input inactivity_delay
+
+  # A state change normally restarts the automation. Rechecking here also makes
+  # the turn-off safe across fast state changes near the end of the delay.
+  - condition: template
+    value_template: >-
+      {{
+        expand(activity_entity_ids + hold_entity_ids)
+        | selectattr('state', 'eq', active_state_value)
+        | list
+        | count == 0
+      }}
+
+  - action: light.turn_off
+    target:
+      entity_id: !input light_entities
+    data:
+      transition: !input turn_off_transition
+
+# Each new active event replaces the current wait/delay and recomputes the
+# aggregate room state, giving the blueprint one predictable ownership timer.
+mode: restart
+max_exceeded: silent
