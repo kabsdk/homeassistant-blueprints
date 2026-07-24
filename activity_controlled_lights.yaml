@@ -9,6 +9,10 @@ blueprint:
     automation takes ownership of its selected lights whenever activity turns
     them on, even if someone had already switched them on manually.
 
+    Lights that are off receive the selected JSON lighting profile when turned
+    on. Lights that are already on are adopted without a service call, so their
+    brightness and color are left unchanged.
+
     Optional activation conditions can restrict only when activity is allowed
     to turn the lights on (for example by illuminance, time, presence, or a
     lockout helper). They do not prevent an already-started run from eventually
@@ -43,6 +47,18 @@ blueprint:
               filter:
                 - domain: light
               multiple: true
+
+        lighting_profile:
+          name: Lighting profile
+          description: >
+            The same input_text JSON lighting profile used by the Philips Hue
+            dimmer blueprint. It must contain integer brightness (1-255) and
+            color_temp_kelvin (1000-10000). The profile is applied only to
+            selected lights that are currently off.
+          selector:
+            entity:
+              filter:
+                - domain: input_text
 
     behavior:
       name: Activity behavior
@@ -120,6 +136,7 @@ variables:
   activity_entity_ids: !input activity_entities
   hold_entity_ids: !input hold_entities
   light_entity_ids: !input light_entities
+  lighting_profile_entity: !input lighting_profile
   active_state_value: !input active_state
 
 triggers:
@@ -142,17 +159,70 @@ actions:
           # Conditions deliberately apply only to activation. Once this
           # automation owns the lights, lockouts and lux changes must not leave
           # them on forever.
+          - variables:
+              lights_that_are_off: >-
+                {{
+                  expand(light_entity_ids)
+                  | selectattr('state', 'eq', 'off')
+                  | map(attribute='entity_id')
+                  | list
+                }}
+
           - choose:
+              # Adopting already-on lights must not send light.turn_on: doing so
+              # can reapply a profile or restore an old brightness attribute.
+              - conditions:
+                  - condition: template
+                    value_template: "{{ lights_that_are_off | count == 0 }}"
+                sequence:
+                  - variables:
+                      ownership_adopted_without_light_command: true
+
               - conditions: !input activation_conditions
                 sequence:
-                  # Always call turn_on, including when every selected light is
-                  # already on. This is the ownership hand-off: manual state
-                  # does not exempt a light from the inactivity timer.
-                  - action: light.turn_on
-                    target:
-                      entity_id: !input light_entities
-                    data:
-                      transition: !input turn_on_transition
+                  - variables:
+                      profile: >-
+                        {{
+                          states(lighting_profile_entity)
+                          | from_json(default={})
+                        }}
+
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {% if profile is mapping %}
+                                {% set brightness = profile.get("brightness") %}
+                                {% set kelvin = profile.get("color_temp_kelvin") %}
+                                {{
+                                  brightness is integer
+                                  and brightness is not boolean
+                                  and 1 <= brightness <= 255
+                                  and kelvin is integer
+                                  and kelvin is not boolean
+                                  and 1000 <= kelvin <= 10000
+                                }}
+                              {% else %}
+                                false
+                              {% endif %}
+                        sequence:
+                          # Apply the profile only to lights that were off when
+                          # activity arrived. Already-on lights are left exactly
+                          # as they are, including their current brightness.
+                          - action: light.turn_on
+                            target:
+                              entity_id: "{{ lights_that_are_off }}"
+                            data:
+                              brightness: "{{ profile.get('brightness') | int }}"
+                              color_temp_kelvin: >-
+                                {{ profile.get('color_temp_kelvin') | int }}
+                              transition: !input turn_on_transition
+                    default:
+                      - stop: >-
+                          Invalid lighting profile in
+                          {{ lighting_profile_entity }}. Expected integer
+                          brightness 1-255 and color_temp_kelvin 1000-10000.
+                        error: true
             default:
               # A failed activation condition must not abandon an existing
               # ownership timer. Continue only if there is a light to manage.
