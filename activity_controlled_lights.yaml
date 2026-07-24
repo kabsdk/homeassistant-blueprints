@@ -13,10 +13,11 @@ blueprint:
     on. Lights that are already on are adopted without a service call, so their
     brightness and color are left unchanged.
 
-    Optional activation conditions can restrict only when activity is allowed
-    to turn the lights on (for example by illuminance, time, presence, or a
-    lockout helper). They do not prevent an already-started run from eventually
-    turning its lights off.
+    The lockout helper blocks every controller action, including delayed
+    turn-off. Optional activation conditions restrict only when activity is
+    allowed to turn the lights on (for example by illuminance, time, or
+    presence). Startup and automation-reload recovery prevents an interrupted
+    ownership timer from leaving lights stranded on.
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
@@ -59,6 +60,17 @@ blueprint:
             entity:
               filter:
                 - domain: input_text
+
+        lockout_boolean:
+          name: Activity lockout
+          description: >
+            The same input_boolean lockout used by the Philips Hue dimmer
+            blueprint. While it is on, this controller does nothing: it cannot
+            turn lights on, change them, or turn them off.
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
 
     behavior:
       name: Activity behavior
@@ -137,6 +149,7 @@ variables:
   hold_entity_ids: !input hold_entities
   light_entity_ids: !input light_entities
   lighting_profile_entity: !input lighting_profile
+  lockout_boolean_entity: !input lockout_boolean
   active_state_value: !input active_state
 
 triggers:
@@ -150,15 +163,33 @@ triggers:
     to: !input active_state
     id: hold
 
+  # Reloading automations cancels an in-progress wait or delay. Reconcile any
+  # lights that remain on so ownership is not silently lost.
+  - trigger: homeassistant
+    event: start
+    id: reconcile
+
+  - trigger: event
+    event_type: automation_reloaded
+    id: reconcile
+
+  # Entering lockout restarts and immediately stops any running ownership timer.
+  # Leaving lockout reconciles already-on lights through the normal action path.
+  - trigger: state
+    entity_id: !input lockout_boolean
+    id: lockout_changed
+
 actions:
+  - condition: template
+    value_template: "{{ is_state(lockout_boolean_entity, 'off') }}"
+
   - choose:
       - conditions:
           - condition: trigger
             id: activate
         sequence:
-          # Conditions deliberately apply only to activation. Once this
-          # automation owns the lights, lockouts and lux changes must not leave
-          # them on forever.
+          # Optional conditions apply only to activation. The dedicated lockout
+          # is enforced separately across the entire controller lifecycle.
           - variables:
               lights_that_are_off: >-
                 {{
@@ -236,10 +267,17 @@ actions:
                   }}
 
       - conditions:
-          - condition: trigger
-            id: hold
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: hold
+              - condition: trigger
+                id: reconcile
+              - condition: trigger
+                id: lockout_changed
         sequence:
-          # A keep-on source is intentionally unable to illuminate a dark room.
+          # Keep-on sources and recovery events may adopt lights that are on,
+          # but must never illuminate a dark room or alter its light profile.
           - condition: template
             value_template: >-
               {{
@@ -273,6 +311,11 @@ actions:
         | list
         | count == 0
       }}
+
+  # Lockout may have changed while the delay was running. This second check is
+  # intentional defensive protection against races at the end of the timer.
+  - condition: template
+    value_template: "{{ is_state(lockout_boolean_entity, 'off') }}"
 
   - action: light.turn_off
     target:
