@@ -1,0 +1,456 @@
+blueprint:
+  name: "Philips Hue Dimmer Switch v2 - Zigbee2MQTT Light Controller"
+  description: >
+    Controls one Zigbee2MQTT light or group with a Philips Hue Dimmer Switch v2.
+    The On button applies a JSON lighting profile, the Off button activates a
+    motion lockout boolean, and the brightness buttons use native continuous
+    Zigbee2MQTT dimming.
+
+    Expected lighting profile JSON:
+    `{"brightness": 180, "color_temp_kelvin": 2700}`
+  domain: automation
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    required:
+      name: Required configuration
+      icon: mdi:remote
+      input:
+        lighting_profile:
+          name: Lighting profile
+          description: >
+            An input_text containing JSON with `brightness` (1-255) and
+            `color_temp_kelvin` (an integer from 1000 through 10000).
+          selector:
+            entity:
+              filter:
+                - domain: input_text
+
+        hue_dimmer_v2:
+          name: Philips Hue Dimmer Switch v2
+          description: >
+            The Philips 929002398602 Hue Dimmer Switch v2 exposed through
+            Zigbee2MQTT and the Home Assistant MQTT integration.
+          selector:
+            device:
+              filter:
+                - integration: mqtt
+                  manufacturer: Philips
+                  model: "929002398602"
+
+        mqtt_light_name:
+          name: Zigbee2MQTT light or group name
+          description: >
+            The Zigbee2MQTT friendly name only, for example `office_lights`.
+            A Zigbee2MQTT group is recommended when controlling multiple lights.
+          selector:
+            text:
+
+        lockout_boolean:
+          name: Motion lockout boolean
+          description: >
+            The input_boolean checked by motion automations. It is enabled when
+            the Off button is pressed and cleared after the configured duration.
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+    advanced:
+      name: Dimming and timing
+      icon: mdi:tune
+      collapsed: true
+      input:
+        mqtt_base_topic:
+          name: Zigbee2MQTT base topic
+          default: zigbee2mqtt
+          selector:
+            text:
+
+        dimming_speed:
+          name: Dimming speed
+          description: >
+            Brightness units per second. Pressing a brightness button starts
+            continuous movement and releasing it stops movement; short presses
+            therefore produce small time-based changes rather than fixed steps.
+            The valid Zigbee movement-rate range is 1-254.
+          default: 80
+          selector:
+            number:
+              min: 1
+              max: 254
+              step: 1
+              unit_of_measurement: units/s
+              mode: slider
+
+        dimming_max_duration:
+          name: Maximum dimming duration
+          description: >
+            Safety timeout used if a button release event is missed.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 30
+              step: 1
+              unit_of_measurement: s
+              mode: box
+
+        light_transition:
+          name: On/off transition
+          default: 1
+          selector:
+            number:
+              min: 0
+              max: 10
+              step: 0.1
+              unit_of_measurement: s
+              mode: box
+
+        lockout_duration:
+          name: Motion lockout duration
+          default: 15
+          selector:
+            number:
+              min: 1
+              max: 300
+              step: 1
+              unit_of_measurement: s
+              mode: box
+
+# Dimming runs wait for a release event, so other button and defensive release
+# events must be able to run concurrently.
+mode: parallel
+max: 20
+max_exceeded: warning
+
+variables:
+  lighting_profile_entity: !input lighting_profile
+  lockout_boolean_entity: !input lockout_boolean
+  mqtt_light_name_value: !input mqtt_light_name
+  mqtt_base_topic_value: !input mqtt_base_topic
+  dimming_speed_value: !input dimming_speed
+  light_transition_value: !input light_transition
+  mqtt_base_topic_normalized: >-
+    {{ mqtt_base_topic_value | trim | trim('/') }}
+  mqtt_light_name_normalized: >-
+    {{ mqtt_light_name_value | trim | trim('/') }}
+  mqtt_light_set_topic: >-
+    {{ mqtt_base_topic_normalized ~ '/' ~
+       mqtt_light_name_normalized ~ '/set' }}
+
+triggers:
+  - trigger: homeassistant
+    event: start
+    id: initialize
+
+  - trigger: event
+    event_type: automation_reloaded
+    id: initialize
+
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: on_press
+    id: turn_on
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: on_hold
+    id: turn_on
+
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: off_press
+    id: turn_off
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: off_hold
+    id: turn_off
+
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: up_press
+    id: dim_up
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: up_hold
+    id: dim_up
+
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: down_press
+    id: dim_down
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: down_hold
+    id: dim_down
+
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: up_press_release
+    id: dim_stop
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: up_hold_release
+    id: dim_stop
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: down_press_release
+    id: dim_stop
+  - trigger: device
+    device_id: !input hue_dimmer_v2
+    domain: mqtt
+    type: action
+    subtype: down_hold_release
+    id: dim_stop
+
+actions:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{
+                mqtt_base_topic_normalized | length == 0
+                or mqtt_light_name_normalized | length == 0
+              }}
+        sequence:
+          - stop: >-
+              Invalid Zigbee2MQTT MQTT target. The base topic and light or
+              group friendly name must not be empty.
+            error: true
+
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: initialize
+        sequence:
+          # Automation reloads terminate an in-progress delayed Off run. If its
+          # lockout is still active, adopt it and safely clear it after a fresh
+          # duration instead of clearing it early or leaving it stuck forever.
+          - condition: template
+            value_template: "{{ is_state(lockout_boolean_entity, 'on') }}"
+
+          - variables:
+              lockout_recovery_marker: >-
+                {{ states[lockout_boolean_entity].last_reported.isoformat() }}
+
+          - delay:
+              seconds: !input lockout_duration
+
+          - condition: template
+            value_template: >-
+              {{
+                is_state(lockout_boolean_entity, "on")
+                and states[lockout_boolean_entity].last_reported.isoformat()
+                    == lockout_recovery_marker
+              }}
+
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input lockout_boolean
+
+      - conditions:
+          - condition: trigger
+            id: turn_on
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: '{{ {"brightness_move": 0} | to_json }}'
+
+          # Pressing On reverses the preceding manual Off decision, so motion
+          # control should no longer remain locked out.
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input lockout_boolean
+
+          - variables:
+              profile: >-
+                {{ states(lighting_profile_entity) | from_json(default={}) }}
+
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {% if profile is mapping %}
+                        {% set brightness = profile.get("brightness") %}
+                        {% set kelvin = profile.get("color_temp_kelvin") %}
+                        {{
+                          brightness is integer
+                          and brightness is not boolean
+                          and 1 <= brightness <= 255
+                          and kelvin is integer
+                          and kelvin is not boolean
+                          and 1000 <= kelvin <= 10000
+                        }}
+                      {% else %}
+                        false
+                      {% endif %}
+                sequence:
+                  - action: mqtt.publish
+                    data:
+                      topic: "{{ mqtt_light_set_topic }}"
+                      payload: >-
+                        {% set requested_brightness = profile.get("brightness") | int(0) %}
+                        {% set brightness = [[requested_brightness, 1] | max, 255] | min %}
+                        {% set kelvin = profile.get("color_temp_kelvin") | int(0) %}
+                        {{
+                          {
+                            "state": "ON",
+                            "brightness": brightness,
+                            "color_temp": (1000000 / kelvin) | round(0) | int,
+                            "transition": light_transition_value | float(0)
+                          } | to_json
+                        }}
+            default:
+              - stop: >-
+                  Invalid lighting profile in {{ lighting_profile_entity }}.
+                  Expected integer brightness 1-255 and
+                  color_temp_kelvin 1000-10000.
+                error: true
+
+      - conditions:
+          - condition: trigger
+            id: turn_off
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: '{{ {"brightness_move": 0} | to_json }}'
+
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: >-
+                {{
+                  {
+                    "state": "OFF",
+                    "transition": light_transition_value | float(0)
+                  } | to_json
+                }}
+
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input lockout_boolean
+
+          - variables:
+              # Capture the exact state-machine write made by this Off action.
+              # A later Off action writes "on" again and changes last_reported,
+              # preventing this older delayed run from clearing the newer lockout.
+              lockout_write_marker: >-
+                {{ states[lockout_boolean_entity].last_reported.isoformat() }}
+
+          - delay:
+              seconds: !input lockout_duration
+
+          - condition: template
+            value_template: >-
+              {{
+                is_state(lockout_boolean_entity, "on")
+                and states[lockout_boolean_entity].last_reported.isoformat()
+                    == lockout_write_marker
+              }}
+
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input lockout_boolean
+
+      - conditions:
+          - condition: trigger
+            id: dim_up
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: >-
+                {{
+                  {"brightness_move": dimming_speed_value | int(80)}
+                  | to_json
+                }}
+
+          - wait_for_trigger:
+              - trigger: device
+                device_id: !input hue_dimmer_v2
+                domain: mqtt
+                type: action
+                subtype: up_press_release
+              - trigger: device
+                device_id: !input hue_dimmer_v2
+                domain: mqtt
+                type: action
+                subtype: up_hold_release
+            timeout:
+              seconds: !input dimming_max_duration
+            continue_on_timeout: true
+
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: '{{ {"brightness_move": 0} | to_json }}'
+
+      - conditions:
+          - condition: trigger
+            id: dim_down
+        sequence:
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: >-
+                {{
+                  {"brightness_move": 0 - (dimming_speed_value | int(80))}
+                  | to_json
+                }}
+
+          - wait_for_trigger:
+              - trigger: device
+                device_id: !input hue_dimmer_v2
+                domain: mqtt
+                type: action
+                subtype: down_press_release
+              - trigger: device
+                device_id: !input hue_dimmer_v2
+                domain: mqtt
+                type: action
+                subtype: down_hold_release
+            timeout:
+              seconds: !input dimming_max_duration
+            continue_on_timeout: true
+
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: '{{ {"brightness_move": 0} | to_json }}'
+
+      - conditions:
+          - condition: trigger
+            id: dim_stop
+        sequence:
+          # Defensive fallback independent of the dimming run waiting above.
+          # Duplicate stop messages are harmless and protect against a missed
+          # or terminated waiting run.
+          - action: mqtt.publish
+            data:
+              topic: "{{ mqtt_light_set_topic }}"
+              payload: '{{ {"brightness_move": 0} | to_json }}'
