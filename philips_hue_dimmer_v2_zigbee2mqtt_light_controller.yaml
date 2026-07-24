@@ -37,7 +37,6 @@ blueprint:
               filter:
                 - integration: mqtt
                   manufacturer: Philips
-                  model: "929002398602"
 
         mqtt_light_name:
           name: Zigbee2MQTT light or group name
