@@ -185,22 +185,8 @@ triggers:
     device_id: !input hue_dimmer_v2
     domain: mqtt
     type: action
-    subtype: up_hold
-    id: dim_up
-
-  - trigger: device
-    device_id: !input hue_dimmer_v2
-    domain: mqtt
-    type: action
     subtype: down_press
     id: dim_down
-  - trigger: device
-    device_id: !input hue_dimmer_v2
-    domain: mqtt
-    type: action
-    subtype: down_hold
-    id: dim_down
-
   - trigger: device
     device_id: !input hue_dimmer_v2
     domain: mqtt
