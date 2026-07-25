@@ -261,11 +261,6 @@ actions:
           - condition: trigger
             id: turn_on
         sequence:
-          - action: mqtt.publish
-            data:
-              topic: "{{ mqtt_light_set_topic }}"
-              payload: '{{ {"brightness_move": 0} | to_json }}'
-
           # Pressing On reverses the preceding manual Off decision, so motion
           # control should no longer remain locked out.
           - action: input_boolean.turn_off
@@ -321,11 +316,6 @@ actions:
           - condition: trigger
             id: turn_off
         sequence:
-          - action: mqtt.publish
-            data:
-              topic: "{{ mqtt_light_set_topic }}"
-              payload: '{{ {"brightness_move": 0} | to_json }}'
-
           - action: mqtt.publish
             data:
               topic: "{{ mqtt_light_set_topic }}"
