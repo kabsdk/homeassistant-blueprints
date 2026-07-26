@@ -1,0 +1,101 @@
+blueprint:
+  name: "Danfoss Ally external temperature"
+  description: >
+    Sends a Home Assistant temperature sensor to a Danfoss Ally radiator
+    thermostat's `External measured room sensor` number entity.
+
+    The selected sensor is assumed to report degrees Celsius and is sent as
+    signed centidegrees Celsius, as required by Danfoss attribute 0x4015.
+    This blueprint assumes the Ally is configured with `radiator_covered: true`
+    (Room Sensor Mode), in which it relies on the external room sensor. It
+    refreshes every 15 minutes and limits updates to one every 10 minutes.
+  domain: automation
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    required:
+      name: Sensor and thermostat
+      icon: mdi:radiator
+      input:
+        external_temperature_sensor:
+          name: External temperature sensor
+          description: >
+            Temperature sensor representing the room temperature near the
+            thermostat.
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  device_class: temperature
+
+        external_temperature_number:
+          name: Ally external measured room sensor
+          description: >
+            The MQTT number entity named `External measured room sensor` that
+            belongs to the Danfoss Ally thermostat.
+          selector:
+            entity:
+              filter:
+                - domain: number
+                  integration: mqtt
+
+mode: single
+max_exceeded: silent
+
+variables:
+  external_temperature_sensor_entity: !input external_temperature_sensor
+  external_temperature_number_entity: !input external_temperature_number
+
+triggers:
+  - trigger: state
+    entity_id: !input external_temperature_sensor
+
+  - trigger: time_pattern
+    minutes: "/15"
+
+conditions:
+  # Never invent a room temperature when the sensor is unavailable.
+  - condition: template
+    value_template: >-
+      {{ states(external_temperature_sensor_entity) | is_number }}
+
+  # Avoid writing again when the source changes repeatedly in a short period.
+  - condition: template
+    value_template: >-
+      {{
+        as_timestamp(now())
+        - as_timestamp(this.attributes.last_triggered, 0)
+        > 600
+      }}
+
+  # Zigbee2MQTT accepts values above the -80 °C disabled sentinel through
+  # 35 °C. The preceding condition guarantees this conversion is numeric.
+  - condition: template
+    value_template: >-
+      {{
+        -80 < (states(external_temperature_sensor_entity) | float) <= 35
+      }}
+
+actions:
+  - variables:
+      temperature_centidegrees_celsius: >-
+        {{
+          (states(external_temperature_sensor_entity) | float * 100)
+          | round(0)
+          | int
+        }}
+
+  - action: system_log.write
+    data:
+      message: >-
+        Setting {{ external_temperature_number_entity }} to
+        {{ temperature_centidegrees_celsius }} centidegrees Celsius.
+      level: info
+      logger: blueprints.danfoss_ally.external_temperature
+
+  - action: number.set_value
+    target:
+      entity_id: !input external_temperature_number
+    data:
+      value: "{{ temperature_centidegrees_celsius }}"
