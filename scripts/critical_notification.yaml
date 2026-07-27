@@ -1,24 +1,21 @@
 blueprint:
   name: Critical notification
   description: >
-    Send a maximum-volume critical notification through the Companion App
-    notification action currently selected by an input_select helper. Each
-    helper option must be a complete action name such as
-    notify.mobile_app_example_phone.
+    Send a maximum-volume critical notification through one Companion App
+    notification action.
   domain: script
   homeassistant:
     min_version: "2024.8.0"
 
   input:
     companion_app_device:
-      name: Companion App notification selector
+      name: Companion App device
       description: >
-        An input_select helper whose options are complete Companion App
-        notification actions, for example notify.mobile_app_example_phone.
+        Device that should receive the critical notification.
       selector:
-        entity:
+        device:
           filter:
-            - domain: input_select
+            - integration: mobile_app
 
 fields:
   message:
@@ -37,47 +34,35 @@ fields:
     selector:
       text:
 
-variables:
-  companion_app_device_helper: !input companion_app_device
-
 sequence:
-  - alias: Read notification details
+  - alias: Normalize notification details
     variables:
-      notification_action: >
-        {{ states(companion_app_device_helper) | string | trim }}
       notification_message: >
-        {{ message | string | trim }}
+        {{ message | default('', true) | string | trim }}
       notification_title: >
-        {{ title | string | trim }}
+        {{ title | default('Critical', true) | string | trim }}
 
   - alias: Validate notification
     if:
       - condition: template
         value_template: >
-          {{
-            notification_message == ''
-            or notification_action in ['unknown', 'unavailable', '']
-            or notification_action.split('.') | count != 2
-            or notification_action.split('.')[0] != 'notify'
-            or not notification_action.split('.')[1].startswith('mobile_app_')
-          }}
+          {{ notification_message == '' }}
     then:
-      - stop: >
-          A message and a valid notify.mobile_app_* option selected through
-          {{ companion_app_device_helper }} are required.
+      - stop: A notification message is required.
         error: true
 
   - alias: Send critical notification
-    action: "{{ notification_action }}"
+    device_id: !input companion_app_device
+    domain: mobile_app
+    type: notify
+    title: "{{ notification_title }}"
+    message: "{{ notification_message }}"
     data:
-      title: "{{ notification_title }}"
-      message: "{{ notification_message }}"
-      data:
-        push:
-          sound:
-            name: default
-            critical: 1
-            volume: 1.0
+      push:
+        sound:
+          name: default
+          critical: 1
+          volume: 1.0
 
 mode: parallel
 max: 10
