@@ -1,30 +1,30 @@
 blueprint:
   name: Critical notification
   description: >
-    Send a maximum-volume critical notification to the Companion App recipient
-    currently selected on a dashboard through an input_select helper.
+    Send a maximum-volume critical notification to a Companion App device
+    selected each time the script is called.
   domain: script
   homeassistant:
     min_version: "2024.8.0"
 
-  input:
-    recipient_helper:
-      name: Recipient dropdown
-      description: Input select shown on the dashboard to choose the recipient.
-      selector:
-        entity:
-          filter:
-            - domain: input_select
-
-    recipients:
-      name: Recipients
-      description: >
-        Map each exact dropdown option to its Companion App notification action,
-        for example Kristian: notify.mobile_app_kristian_iphone.
-      selector:
-        object:
-
 fields:
+  target:
+    name: Target
+    description: Companion App device that should receive the notification.
+    required: true
+    selector:
+      device:
+        filter:
+          - integration: mobile_app
+
+  title:
+    name: Title
+    description: Notification title.
+    required: false
+    default: Critical alert
+    selector:
+      text:
+
   message:
     name: Message
     description: Notification message.
@@ -33,45 +33,32 @@ fields:
       text:
         multiline: true
 
-  title:
-    name: Title
-    description: Notification title. Defaults to Critical.
-    required: false
-    default: Critical
-    selector:
-      text:
-
-variables:
-  recipient_helper_entity: !input recipient_helper
-  recipient_map: !input recipients
-
 sequence:
   - alias: Resolve notification
     variables:
-      selected_recipient: "{{ states(recipient_helper_entity) }}"
+      target_device: "{{ target | default('', true) }}"
+      notification_title: >
+        {{ title | default('Critical alert', true) | string | trim }}
       notification_message: >
         {{ message | default('', true) | string | trim }}
-      notification_title: >
-        {{ title | default('Critical', true) | string | trim }}
       notification_action: >
-        {{ recipient_map.get(states(recipient_helper_entity), '')
-           | default('', true) | string | trim }}
+        {% if target_device != '' %}
+          notify.mobile_app_{{ device_attr(target_device, 'name') | slugify }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
 
   - alias: Validate notification
     if:
       - condition: template
         value_template: >
           {{
-            notification_message == ''
-            or selected_recipient in ['unknown', 'unavailable']
-            or notification_action == ''
-            or notification_action.split('.') | count != 2
-            or notification_action.split('.')[0] != 'notify'
-            or not notification_action.split('.')[1].startswith('mobile_app_')
+            target_device == ''
+            or device_attr(target_device, 'name') is none
+            or notification_message == ''
           }}
     then:
-      - stop: >
-          A message and a mapped, available dashboard recipient are required.
+      - stop: A Companion App target and non-empty message are required.
         error: true
 
   - alias: Send critical notification
